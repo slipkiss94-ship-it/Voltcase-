@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<title>VOLTCASE Admin</title>
+<style>
+*{box-sizing:border-box;margin:0}
+body{font-family:"Trebuchet MS","Segoe UI",system-ui,sans-serif;background:#f2f4f8;color:#050505}
+header{background:#050505;color:#fff;padding:14px 20px;display:flex;gap:14px;align-items:center;flex-wrap:wrap}
+header b{font-family:"Arial Black",sans-serif;font-size:1.2rem}header i{color:#00c2ff;font-style:normal}
+header span{margin-left:auto;font-size:.85rem;opacity:.7}
+main{max-width:900px;margin:auto;padding:20px}
+button{font:inherit;border:0;border-radius:99px;padding:10px 18px;font-weight:700;cursor:pointer;background:#1f5cff;color:#fff}
+button.g{background:#fff;color:#050505;border:2px solid #e3e6ee}button.r{background:#c0392b}
+.tabs{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap}
+.tabs button{background:#fff;color:#050505;border:2px solid #e3e6ee}
+.tabs button.on{background:#1f5cff;color:#fff;border-color:#1f5cff}
+.c{background:#fff;border-radius:18px;padding:18px;margin-bottom:14px}
+.top{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:center}
+input,select,textarea{width:100%;padding:11px;border:2px solid #e3e6ee;border-radius:12px;font:inherit;margin-bottom:10px;background:#fff}
+select.st{width:auto;margin:0}
+.vr{display:grid;grid-template-columns:1fr 110px 44px;gap:8px}
+.pill{font-size:.8rem;background:#e8efff;color:#1f5cff;border-radius:99px;padding:3px 10px;font-weight:700}
+.muted{color:#5b6270;font-size:.9rem}
+.hide{display:none!important}
+dialog{border:0;border-radius:20px;padding:22px;width:min(560px,94vw);max-height:92vh}
+dialog::backdrop{background:rgba(0,0,0,.6)}
+#login{max-width:360px;margin:40px auto}
+.err{color:#c0392b;margin-top:8px}
+</style></head><body>
+<header><b>VOLT<i>CASE</i> admin</b><span id="who"></span><button class="g hide" id="out">Log out</button></header>
+<main>
+<form id="login" class="c">
+  <h2 style="margin-bottom:14px">Admin login</h2>
+  <input id="em" type="email" placeholder="Email" autocomplete="username" required>
+  <input id="pw" type="password" placeholder="Password" autocomplete="current-password" required>
+  <button type="submit" style="width:100%">Log in</button><p class="err" id="err"></p>
+</form>
+
+<div id="app" class="hide">
+  <div class="tabs" id="mt"><button data-t="orders" class="on">Orders</button><button data-t="products">Products</button></div>
+
+  <div id="orders">
+    <select id="fs" class="st" style="margin-bottom:14px"></select>
+    <div id="olist"></div>
+  </div>
+
+  <div id="products" class="hide">
+    <div class="tabs" id="ct"></div>
+    <button id="newp" style="margin-bottom:14px">+ Add product</button>
+    <div id="plist"></div>
+  </div>
+</div>
+
+<dialog id="dlg"><form id="pf">
+  <h2 style="margin-bottom:12px">Product</h2>
+  <input type="hidden" id="pid"><input type="hidden" id="purl">
+  <select id="pcat"><option value="cases">iPhone battery case</option><option value="sunglasses">AI sunglasses</option></select>
+  <input id="pname" placeholder="Product name" required>
+  <textarea id="pdesc" rows="3" placeholder="Description (use real details from your supplier)"></textarea>
+  <label class="muted">Photo (JPG or PNG)</label><input id="pimg" type="file" accept="image/*">
+  <label class="muted">Options and prices in ZAR (iPhone models, colours or styles)</label>
+  <div id="vrows"></div>
+  <button type="button" class="g" id="addv" style="margin-bottom:12px">+ Add option</button>
+  <label class="muted"><input type="checkbox" id="pact" style="width:auto;margin-right:8px">Show in shop</label>
+  <div class="top" style="margin-top:14px"><button type="button" class="g" id="cx">Cancel</button><button type="submit">Save product</button></div>
+</form></dialog>
+</main>
+
+<script src="config.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.58.0/dist/umd/supabase.min.js"></script>
+<script>
+const C = window.VOLT || {};
+if (!C.SUPABASE_URL) { document.body.innerHTML = "<p style='padding:24px'>Add your Supabase details to config.js first.</p>"; throw new Error("no config"); }
+const sb = supabase.createClient(C.SUPABASE_URL, C.SUPABASE_ANON_KEY);
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const zar = n => "R" + Number(n).toLocaleString("en-ZA");
+const STATUS = ["Pending Payment","Paid","Processing","Shipped","Delivered"];
+const CATS = {cases:"iPhone battery cases", sunglasses:"AI sunglasses"};
+let cat = "cases", prods = [], orders = [];
+
+sb.auth.onAuthStateChange((_e, s) => {
+  $("#login").classList.toggle("hide", !!s); $("#app").classList.toggle("hide", !s); $("#out").classList.toggle("hide", !s);
+  $("#who").textContent = s ? s.user.email : "";
+  if (s) { loadOrders(); loadProds(); }
+});
+$("#login").onsubmit = async e => { e.preventDefault();
+  const { error } = await sb.auth.signInWithPassword({ email: $("#em").value, password: $("#pw").value });
+  $("#err").textContent = error ? error.message : ""; };
+$("#out").onclick = () => sb.auth.signOut();
+$("#mt").onclick = e => { const t = e.target.dataset.t; if (!t) return;
+  document.querySelectorAll("#mt button").forEach(b => b.classList.toggle("on", b.dataset.t === t));
+  $("#orders").classList.toggle("hide", t !== "orders"); $("#products").classList.toggle("hide", t !== "products"); };
+
+/* ---- orders ---- */
+$("#fs").innerHTML = '<option value="">All statuses</option>' + STATUS.map(s => `<option>${s}</option>`).join("");
+$("#fs").onchange = drawOrders;
+async function loadOrders() {
+  const { data, error } = await sb.from("orders").select("*,order_items(*)").order("created_at", { ascending: false });
+  if (error) { $("#olist").textContent = error.message; return; }
+  orders = data; drawOrders();
+}
+function drawOrders() {
+  const f = $("#fs").value, list = orders.filter(o => !f || o.status === f);
+  $("#olist").innerHTML = list.map(o => `<div class="c">
+    <div class="top"><div><b>${esc(o.ref)}</b> <span class="muted">${new Date(o.created_at).toLocaleString("en-ZA")}</span></div>
+      <select class="st" data-o="${o.id}">${STATUS.map(s => `<option ${s === o.status ? "selected" : ""}>${s}</option>`).join("")}</select></div>
+    <p style="margin-top:10px"><b>${esc(o.name)}</b><br><a href="tel:${esc(o.phone)}">${esc(o.phone)}</a> &middot; <a href="mailto:${esc(o.email)}">${esc(o.email)}</a></p>
+    <p class="muted" style="white-space:pre-wrap;margin:8px 0">${esc(o.address)}</p>
+    ${o.order_items.map(i => `<div>${i.qty} x ${esc(i.product_name)} (${esc(i.variant_label)}) &middot; ${zar(i.price_zar * i.qty)}</div>`).join("")}
+    <p style="margin-top:8px"><b>Total ${zar(o.total_zar)}</b></p></div>`).join("") || '<p class="muted">No orders yet.</p>';
+}
+document.addEventListener("change", async e => {
+  if (!e.target.dataset.o) return;
+  const { error } = await sb.from("orders").update({ status: e.target.value }).eq("id", e.target.dataset.o);
+  if (error) alert(error.message); else { const o = orders.find(o => o.id === e.target.dataset.o); if (o) o.status = e.target.value; }
+});
+
+/* ---- products ---- */
+async function loadProds() {
+  const { data, error } = await sb.from("products").select("*,variants(*)").order("created_at");
+  if (error) { $("#plist").textContent = error.message; return; }
+  prods = data; drawProds();
+}
+function drawProds() {
+  $("#ct").innerHTML = Object.entries(CATS).map(([k, l]) => `<button data-c="${k}" class="${k === cat ? "on" : ""}">${l}</button>`).join("");
+  $("#plist").innerHTML = prods.filter(p => p.category === cat).map(p => `<div class="c"><div class="top">
+    <div style="display:flex;gap:12px;align-items:center">${p.image_url ? `<img src="${esc(p.image_url)}" alt="" style="width:56px;height:56px;object-fit:cover;border-radius:12px">` : ""}
+    <div><b>${esc(p.name)}</b> ${p.active ? "" : '<span class="pill">Hidden</span>'}<div class="muted">${p.variants.map(v => esc(v.label) + " " + zar(v.price_zar)).join(" &middot; ")}</div></div></div>
+    <div><button class="g" data-e="${p.id}">Edit</button> <button class="r" data-d="${p.id}">Delete</button></div></div></div>`).join("") || '<p class="muted">No products in this category yet.</p>';
+}
+$("#ct").onclick = e => { if (e.target.dataset.c) { cat = e.target.dataset.c; drawProds(); } };
+$("#plist").onclick = async e => {
+  if (e.target.dataset.e) openP(prods.find(p => p.id === e.target.dataset.e));
+  if (e.target.dataset.d && confirm("Delete this product? This cannot be undone.")) {
+    const { error } = await sb.from("products").delete().eq("id", e.target.dataset.d);
+    if (error) alert(error.message); else loadProds(); }
+};
+$("#newp").onclick = () => openP(null);
+$("#cx").onclick = () => $("#dlg").close();
+$("#addv").onclick = () => addV({});
+function addV(v) {
+  const d = document.createElement("div"); d.className = "vr";
+  d.innerHTML = `<input placeholder="Option, e.g. iPhone 15 or Black" value="${esc(v.label)}"><input type="number" min="1" step="0.01" placeholder="Price (R)" value="${v.price_zar ?? ""}"><button type="button" class="g" onclick="this.parentNode.remove()">x</button>`;
+  $("#vrows").appendChild(d);
+}
+function openP(p) {
+  $("#pid").value = p ? p.id : ""; $("#pcat").value = p ? p.category : cat; $("#pname").value = p ? p.name : "";
+  $("#pdesc").value = p ? p.description || "" : ""; $("#purl").value = p ? p.image_url || "" : ""; $("#pimg").value = "";
+  $("#pact").checked = p ? p.active : true; $("#vrows").innerHTML = "";
+  (p && p.variants.length ? p.variants : [{}]).forEach(v => addV(v)); $("#dlg").showModal();
+}
+$("#pf").onsubmit = async e => {
+  e.preventDefault();
+  let url = $("#purl").value; const f = $("#pimg").files[0];
+  if (f) {
+    const path = Date.now() + "-" + f.name.replace(/[^a-z0-9.]/gi, "_");
+    const { error } = await sb.storage.from("product-images").upload(path, f);
+    if (error) return alert(error.message);
+    url = sb.storage.from("product-images").getPublicUrl(path).data.publicUrl;
+  }
+  const vs = [...document.querySelectorAll(".vr")].map(r => ({ label: r.children[0].value.trim(), price_zar: +r.children[1].value })).filter(v => v.label && v.price_zar > 0);
+  if (!vs.length) return alert("Add at least one option with a price.");
+  const row = { category: $("#pcat").value, name: $("#pname").value.trim(), description: $("#pdesc").value.trim(), image_url: url, active: $("#pact").checked };
+  let id = $("#pid").value;
+  if (id) { const { error } = await sb.from("products").update(row).eq("id", id); if (error) return alert(error.message); }
+  else { const { data, error } = await sb.from("products").insert(row).select().single(); if (error) return alert(error.message); id = data.id; }
+  await sb.from("variants").delete().eq("product_id", id);
+  const { error: ve } = await sb.from("variants").insert(vs.map(v => ({ ...v, product_id: id })));
+  if (ve) return alert(ve.message);
+  $("#dlg").close(); cat = row.category; loadProds();
+};
+</script>
+</body></html>
